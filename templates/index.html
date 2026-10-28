@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Phase 10 - Wildcard Run Validation Fixed</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .app-bg {
+            background: linear-gradient(135deg, #0d1b2a 0%, #1b263b 50%, #415a77 100%);
+        }
+        .card-shadow {
+            box-shadow: 0 12px 30px -5px rgba(0, 0, 0, 0.6), 0 4px 6px -2px rgba(0, 0, 0, 0.4);
+        }
+        .p10-card-img {
+            position: absolute;
+            width: 100px;
+            height: 148px;
+            object-fit: contain;
+            border-radius: 0.75rem;
+            transform-origin: bottom center;
+            transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), left 0.3s ease, z-index 0.2s ease, top 0.3s ease;
+            cursor: grab;
+        }
+        .p10-card-img:active {
+            cursor: grabbing;
+        }
+
+        /* Screenshot-inspired table: opponents occupy a compact grid above the piles.
+           All objective slots stay visible; no scrolling through opponent boxes. */
+        #game-screen { width:min(98vw,1800px); max-width:none; height:96dvh; min-height:0; gap:8px; overflow:hidden; padding:12px; }
+        #game-topbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; flex:0 0 auto; }
+        #opponents-container { display:flex; flex:1 1 300px; justify-content:flex-end; flex-wrap:wrap; gap:6px; min-width:0; }
+        #opponents-container > div { flex:0 0 auto; padding:4px 7px; }
+        #game-table { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); grid-template-rows:minmax(0,1fr) auto; align-items:center; justify-items:center; gap:8px; flex:1 1 auto; min-height:0; min-width:0; overflow:hidden; margin:0; padding:0; }
+        #game-table > :nth-child(1), #game-table > :nth-child(2) { grid-row:2; }
+        #game-table > :nth-child(1) { grid-column:1; justify-self:end; }
+        #game-table > :nth-child(2) { grid-column:2; justify-self:start; }
+        #game-table > :nth-child(3) { grid-row:2; grid-column:1 / -1; justify-self:end; margin-right:calc(50% + 120px); max-width:calc(100% - 230px); min-width:0; }
+        #objective-boxes-container { flex-wrap:wrap; gap:5px; }
+        #objective-boxes-container > div { width:clamp(105px,10vw,145px); height:120px; padding:7px; }
+        #opponents-table-boxes { grid-row:1; grid-column:1 / -1; display:grid; grid-template-columns:repeat(var(--opponent-count,1),minmax(0,1fr)); gap:8px; align-items:stretch; width:100%; min-width:0; min-height:0; max-height:100%; overflow:visible; padding:0; }
+        #opponents-table-boxes > div { width:100%; min-width:0; min-height:0; padding:7px; display:flex; flex-direction:column; gap:4px; }
+        .opponent-boxes-row { display:grid; grid-template-columns:repeat(var(--slot-count,1),minmax(0,1fr)); gap:5px; width:100%; min-width:0; flex:1; }
+        .opponent-objective-box { width:100%; min-width:0; min-height:0; height:clamp(90px,15vh,155px); padding:5px; }
+        .opponent-cards { display:flex; align-items:center; justify-content:center; min-height:0; width:100%; flex:1; background:rgba(0,0,0,.3); border-radius:6px; padding:3px; overflow:hidden; }
+        .opponent-cards img { width:clamp(18px,2.4vw,36px); height:clamp(28px,5vh,54px); object-fit:contain; flex:0 1 auto; min-width:0; margin-left:clamp(-13px,-.7vw,-4px); }
+        .opponent-cards img:first-child { margin-left:0; }
+        .opponent-objective-box .opponent-slot-title { font-size:clamp(9px,.85vw,12px); line-height:1.1; }
+        #hand-dock { flex:0 0 auto; min-width:0; padding:8px; }
+        #hand-container { height:clamp(110px,19vh,165px); }
+        @media(max-width:850px) {
+            #game-screen { padding:7px; gap:5px; }
+            #game-table { grid-template-rows:minmax(0,1fr) auto auto; gap:5px; }
+            #game-table > :nth-child(3) { grid-row:3; grid-column:1 / -1; justify-self:center; margin-right:0; max-width:100%; }
+            #opponents-table-boxes { gap:4px; }
+            #opponents-table-boxes > div { padding:4px; }
+            .opponent-objective-box { height:clamp(75px,13vh,120px); }
+            .opponent-cards img { width:clamp(16px,3.4vw,29px); height:clamp(24px,4vh,42px); }
+            #objective-boxes-container > div { height:95px; }
+            #hand-container { height:115px; }
+        }
+        @media(max-width:520px) {
+            body { padding:2px; }
+            #game-screen { width:100%; height:99dvh; border-radius:10px; }
+            #game-topbar { gap:3px; }
+            #opponents-container { gap:3px; }
+            #opponents-container > div { padding:2px 4px; }
+            #opponents-table-boxes { grid-template-columns:repeat(var(--opponent-count,1),minmax(0,1fr)); }
+            .opponent-objective-box { height:clamp(70px,12vh,105px); }
+            .opponent-objective-box > div:first-child { font-size:8px; }
+            .opponent-cards img { width:clamp(13px,3.5vw,24px); height:clamp(20px,4vh,37px); }
+            #game-table > :nth-child(1), #game-table > :nth-child(2) { transform:scale(.75); }
+            #hand-dock { padding:4px; }
+            #hand-container { height:105px; }
+        }
+
+        /* Mobile: compact board, all opponent objectives visible, tap-first controls. */
+        .mobile-selected { transform: translateY(-30px) scale(1.06) !important; outline:3px solid #fbbf24; outline-offset:2px; }
+        #game-screen, #game-table, #hand-dock { min-width:0; }
+        #game-table > div { min-width:0; }
+        #game-topbar { overflow:visible; }
+        #game-table .opponent-objective-box { touch-action: manipulation; cursor:pointer; }
+        #objective-boxes-container > div { touch-action: manipulation; cursor:pointer; }
+        @media (max-width: 700px) {
+            html, body { width:100%; min-height:100%; overflow-x:hidden; }
+            body { padding:0; justify-content:flex-start; }
+            #game-screen { height:100dvh; min-height:0; width:100%; padding:5px; border-radius:0; gap:4px; overflow:hidden; }
+            #game-topbar { padding:4px; gap:3px; }
+            #game-topbar > div:first-child { gap:3px; flex-wrap:wrap; }
+            #phase-badge, #turn-banner, #scoreboard { padding:3px 5px; font-size:10px; line-height:1.15; }
+            #opponents-container { flex-basis:100%; justify-content:center; gap:3px; }
+            #opponents-container > div { max-width:48%; }
+            #opponents-container .font-extrabold { font-size:10px; }
+            #game-table { grid-template-columns:repeat(2,minmax(0,1fr)); grid-template-rows:minmax(0,1fr) auto auto; gap:3px; }
+            #opponents-table-boxes { grid-template-columns:repeat(var(--opponent-count,1),minmax(0,1fr)); gap:3px; align-self:stretch; }
+            #opponents-table-boxes > div { padding:3px; gap:2px; }
+            .opponent-panel > span { font-size:9px; line-height:1.1; }
+            .opponent-boxes-row { gap:2px; }
+            .opponent-objective-box { height:clamp(67px,11vh,108px); padding:2px; border-width:1px; }
+            .opponent-objective-box > div:first-child { font-size:8px; }
+            .opponent-slot-title { font-size:9px; }
+            .opponent-cards { padding:1px; }
+            .opponent-cards img { width:clamp(13px,3.5vw,26px); height:clamp(20px,4.3vh,38px); }
+            #game-table > :nth-child(1), #game-table > :nth-child(2) { transform:scale(.72); transform-origin:center; }
+            #game-table > :nth-child(3) { grid-column:1 / -1; grid-row:3; justify-self:stretch; margin:0; max-width:100%; padding:5px; }
+            #objective-boxes-container { justify-content:center; }
+            #objective-boxes-container > div { width:clamp(105px,39vw,160px); height:clamp(86px,13vh,115px); padding:4px; }
+            #hand-dock { padding:4px; }
+            #hand-dock > div:first-child { margin-bottom:3px; flex-wrap:wrap; }
+            #hand-container { height:clamp(95px,17vh,150px); }
+            .p10-card-img { width:clamp(54px,16vw,78px); height:clamp(82px,23vh,117px); }
+            #login, #lobby-screen { max-width:calc(100vw - 16px); }
+        }
+        @media (max-width: 390px) {
+            .opponent-cards img { width:clamp(11px,3vw,18px); }
+            .opponent-slot-title { font-size:8px; }
+            #hand-container { height:95px; }
+        }
+    </style>
+</head>
+<body class="app-bg text-white min-h-screen flex flex-col items-center justify-center p-4 font-sans select-none overflow-hidden">
+
+    <!-- Login Screen -->
+    <div id="login" class="bg-[#1b263b]/95 backdrop-blur-2xl border border-white/15 p-8 rounded-3xl w-96 text-center shadow-2xl">
+        <div class="inline-block bg-amber-500 text-black font-black px-4 py-1 rounded-full text-xs tracking-widest mb-3 shadow">WILDCARD FRIENDLY</div>
+        <h1 class="text-4xl font-black mb-1 text-amber-400 tracking-wider drop-shadow">PHASE 10</h1>
+        <p class="text-gray-300 text-xs mb-6 tracking-wide">ONLINE MULTIPLAYER ARENA</p>
+        
+        <input id="username" type="text" placeholder="Enter Your Nickname" class="w-full p-3.5 mb-4 bg-black/40 rounded-2xl border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:border-amber-400 text-center font-semibold transition"><br>
+        <input id="room" type="text" placeholder="Room Code (e.g., 999)" class="w-full p-3.5 mb-4 bg-black/40 rounded-2xl border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:border-amber-400 text-center font-semibold transition"><br>
+        
+        <div class="mb-6 text-left px-1">
+            <label class="text-xs font-bold text-amber-300 uppercase tracking-wider block mb-1">Target Phases to Play:</label>
+            <select id="max-phases-select" class="w-full p-3 bg-black/50 rounded-2xl border border-white/20 text-white font-semibold focus:outline-none focus:border-amber-400">
+                <option value="1">1 Random Phase</option>
+                <option value="2">2 Random Phases</option>
+                <option value="3">3 Random Phases</option>
+                <option value="4">4 Random Phases</option>
+                <option value="5">5 Random Phases</option>
+                <option value="6">6 Random Phases</option>
+                <option value="7">7 Random Phases</option>
+                <option value="8">8 Random Phases</option>
+                <option value="9">9 Random Phases</option>
+                <option value="10" selected>10 Phases (1–10 in Order)</option>
+            </select>
+        </div>
+        
+        <button onclick="connect()" class="w-full bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold p-4 rounded-2xl tracking-wider transition shadow-lg shadow-amber-600/30 active:scale-95">JOIN TABLE</button>
+    </div>
+    
+    <!-- Lobby Screen -->
+    <div id="lobby-screen" class="hidden text-center bg-[#1b263b]/95 backdrop-blur-2xl border border-white/15 p-8 rounded-3xl shadow-2xl w-[420px]">
+        <div class="text-amber-400 font-bold text-sm tracking-widest uppercase mb-1">Room Code: <span id="room-name" class="text-white text-lg font-black"></span></div>
+        <p id="lobby-match-info" class="text-gray-300 text-xs mb-6">Bot 1 will join you at the table!</p>
+        
+        <div class="bg-black/30 border border-white/10 rounded-2xl p-4 mb-6">
+            <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Players at Table</h3>
+            <ul id="players-list" class="space-y-2 text-base font-bold text-amber-200"></ul>
+        </div>
+
+        <button onclick="startGame()" class="w-full bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-white font-extrabold p-4 rounded-2xl tracking-wider transition shadow-lg shadow-emerald-600/30 active:scale-95">LAUNCH MATCH</button>
+    </div>
+
+    <!-- Main Game Screen -->
+    <div id="game-screen" class="hidden w-full max-w-6xl h-[94vh] bg-[#111827]/85 backdrop-blur-md border border-white/15 rounded-3xl p-6 flex flex-col justify-between shadow-2xl relative">
+        
+        <!-- Top App Bar -->
+        <div id="game-topbar" class="flex justify-between items-center bg-black/30 px-6 py-3 rounded-2xl border border-white/10">
+            <div class="flex items-center gap-3">
+                <div id="phase-badge" class="bg-amber-500 text-black font-black px-3 py-1.5 rounded-xl text-xs shadow">PHASE 1 / 10</div>
+                <div id="turn-banner" class="text-sm font-black text-amber-300 tracking-wide bg-amber-500/10 border border-amber-500/30 px-4 py-1 rounded-xl"></div>
+            </div>
+            <div id="scoreboard" class="text-xs font-bold text-amber-200 bg-black/30 px-3 py-2 rounded-xl" title="Lower score is better">Score: 0</div>
+                <div id="opponents-container" class="flex gap-4"></div>
+        </div>
+
+        <!-- Center Table Area -->
+        <div id="game-table" class="flex justify-center items-center gap-6 my-auto flex-wrap">
+            <!-- Draw Deck -->
+            <div onclick="drawCard('deck')" class="relative group cursor-pointer hover:scale-105 transition-transform">
+                <div class="absolute -top-1.5 -left-1.5 w-24 h-36 bg-blue-900/40 rounded-2xl border border-blue-400/20"></div>
+                <div class="bg-gradient-to-br from-blue-700 to-blue-900 border-2 border-blue-400/50 w-24 h-36 rounded-2xl flex flex-col items-center justify-center card-shadow relative">
+                    <div class="absolute inset-2 border border-blue-400/30 rounded-xl flex flex-col items-center justify-center text-center">
+                        <span class="text-[9px] tracking-widest font-black text-blue-200">DECK</span>
+                        <span id="deck-count" class="text-xl font-black text-white mt-1">--</span>
+                        <span class="text-[8px] text-blue-300">CLICK TO DRAW</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Discard Pile -->
+            <div ondragover="allowDrop(event)" ondrop="dropToDiscard(event)" onclick="tapDiscardOrDraw()" id="discard-box" class="bg-gradient-to-br from-gray-800 to-gray-900 border-2 border-dashed border-gray-500 w-24 h-36 rounded-2xl flex flex-col items-center justify-center card-shadow relative cursor-pointer hover:border-amber-400 transition-all">
+                <div id="discard-content" class="absolute inset-2 rounded-xl flex flex-col items-center justify-center text-center">
+                    <span class="text-[9px] tracking-widest font-black text-gray-400 uppercase">DISCARD</span>
+                    <span class="text-[10px] text-gray-500 mt-1 italic">Drop card here</span>
+                </div>
+            </div>
+
+            <!-- Your Dynamic Objective Boxes -->
+            <div class="flex flex-col gap-2 bg-black/20 p-4 rounded-2xl border border-white/10">
+                <div class="flex justify-between items-center px-1">
+                    <span id="phase-goal-title" class="text-[11px] font-black tracking-widest text-amber-400 uppercase">Your Objective</span>
+                    <span id="phase-status-tag" class="text-[9px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold">Active</span>
+                </div>
+                
+                <div id="objective-boxes-container" class="flex gap-3"></div>
+
+                <button onclick="submitPhaseCards()" id="submit-phase-btn" class="w-full bg-amber-600 hover:bg-amber-500 text-black text-xs font-black py-2 rounded-xl transition shadow">SUBMIT COMPLETED PHASE</button>
+            </div>
+
+            <!-- Opponents' Table Boxes Container -->
+            <div id="opponents-table-boxes" class="flex flex-col gap-3 min-w-[340px]"></div>
+        </div>
+
+        <!-- Bottom Section: Stacked Hand Dock -->
+        <div id="hand-dock" class="bg-black/40 backdrop-blur-md p-4 rounded-2xl border border-white/10 flex flex-col">
+            <div class="flex justify-between items-center mb-3 px-2">
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-black tracking-widest text-amber-400 uppercase">YOUR HAND</span>
+                    <span class="bg-white/10 px-2.5 py-0.5 rounded-full text-xs font-bold text-gray-300"><span id="hand-count">10</span> cards</span>
+                </div>
+                <span class="text-[11px] text-gray-400 italic">Tap a card, then tap a box or discard pile. Drag also works.</span>
+            </div>
+            
+            <div id="hand-container" class="relative flex justify-center items-center h-44 w-full"></div>
+        </div>
+
+    </div>
+
+    <script>
+        const socket = io();
+        let myUsername = '';
+        let currentRoom = '';
+        let selectedMaxPhases = 10;
+        let isMyTurn = false;
+        let hasDrawnCard = false;
+        let currentHand = [];
+        let phaseSlotsData = [];
+        let slotSelections = {};
+        let isPhaseCompleted = false;
+        let mySubmittedBoxes = [];
+        let opponentDataCache = {};
+        let selectedCardIndex = null;
+        let lastHandSignature = '';
+        let lastDisplayedRound = null;
+
+        function tapCard(index) {
+            selectedCardIndex = selectedCardIndex === index ? null : index;
+            renderHand();
+        }
+
+        function syntheticDrop(index) {
+            return {
+                preventDefault() {}, stopPropagation() {},
+                dataTransfer: {getData() {return 'hand_' + index;}}
+            };
+        }
+
+        function tapDiscardOrDraw() {
+            if (selectedCardIndex === null) return drawCard('discard');
+            const index = selectedCardIndex;
+            selectedCardIndex = null;
+            dropToDiscard(syntheticDrop(index));
+        }
+
+        function tapOwnBox(index) {
+            if (selectedCardIndex === null) return;
+            const cardIndex = selectedCardIndex;
+            selectedCardIndex = null;
+            dropToSlot(syntheticDrop(cardIndex), index);
+        }
+
+        function tapOpponentBox(player, index) {
+            if (selectedCardIndex === null) return;
+            const cardIndex = selectedCardIndex;
+            selectedCardIndex = null;
+            dropToOpponentSlot(syntheticDrop(cardIndex), player, index);
+        }
+
+
+        function connect() {
+            myUsername = document.getElementById('username').value;
+            currentRoom = document.getElementById('room').value;
+            selectedMaxPhases = document.getElementById('max-phases-select').value;
+            
+            if(!myUsername || !currentRoom) return alert('Please enter your nickname and room code.');
+            
+            socket.emit('join_game', { username: myUsername, room: currentRoom });
+            document.getElementById('login').classList.add('hidden');
+            document.getElementById('lobby-screen').classList.remove('hidden');
+            document.getElementById('room-name').innerText = currentRoom;
+            document.getElementById('lobby-match-info').innerText = selectedMaxPhases == 1 ? `Match Length: 1 Randomized Phase. Bot 1 will join you!` : `Match Length: ${selectedMaxPhases} Phases. Bot 1 will join you!`;
+        }
+
+        function startGame() {
+            socket.emit('start_game', { room: currentRoom, max_phases: selectedMaxPhases });
+        }
+
+        function drawCard(source) {
+            if (!isMyTurn) return alert("It's not your turn!");
+            if (hasDrawnCard) return alert("You already drew a card this turn! Drag a card to the discard pile.");
+            
+            socket.emit('draw_card', { room: currentRoom, source: source });
+        }
+
+        function allowDrop(ev) {
+            ev.preventDefault();
+        }
+
+        function drag(ev, index) {
+            ev.dataTransfer.setData("text/plain", "hand_" + index);
+        }
+
+        function dropToDiscard(ev) {
+            ev.preventDefault();
+            if (!isMyTurn) return alert("It's not your turn!");
+            if (!hasDrawnCard) return alert("You must draw a card before discarding!");
+            
+            const dataStr = ev.dataTransfer.getData("text/plain");
+            if (dataStr.startsWith("hand_")) {
+                const cardIndex = parseInt(dataStr.replace("hand_", ""));
+                if (!isNaN(cardIndex)) {
+                    for (let s in slotSelections) {
+                        slotSelections[s] = slotSelections[s].map(idx => {
+                            if (idx === cardIndex) return null;
+                            if (idx > cardIndex) return idx - 1;
+                            return idx;
+                        }).filter(idx => idx !== null);
+                    }
+                    socket.emit('discard_card', { room: currentRoom, card_index: cardIndex });
+                }
+            }
+        }
+
+        // Wilds occupy fixed positions in an ordered run once it is laid down.
+        function runStart(cards) {
+            if (!cards.length || cards.length > 12) return null;
+            let possible = [];
+            for (let start = 1; start + cards.length - 1 <= 12; start++) {
+                if (cards.every((card, i) => card.type === 'wild' ||
+                    (card.type === 'number' && Number(card.value) === start + i))) {
+                    possible.push(start);
+                }
+            }
+            return possible.length ? possible[0] : null;
+        }
+
+        function checkDropValidity(slot, existingCards, newCard, side = 'end', completed = false) {
+            const label = slot.label.toLowerCase();
+            if (label.includes('run')) {
+                if (completed) {
+                    const combined = side === 'start' ? [newCard, ...existingCards] : [...existingCards, newCard];
+                    return runStart(combined) !== null;
+                }
+                // While selecting cards, allow any order that can form a run.
+                const cards = [...existingCards, newCard];
+                const numbers = cards.filter(c => c.type !== 'wild').map(c => Number(c.value));
+                if (new Set(numbers).size !== numbers.length || cards.length > 12) return false;
+                const wilds = cards.length - numbers.length;
+                return Array.from({length: 13 - cards.length}, (_, i) => i + 1).some(start =>
+                    numbers.every(n => n >= start && n < start + cards.length));
+            }
+            const combined = [...existingCards, newCard];
+            if (label.includes('set')) {
+                const values = combined.filter(c => c.type !== 'wild').map(c => c.value);
+                return values.every(v => v === values[0]);
+            }
+            if (label.includes('color')) {
+                const colors = combined.filter(c => c.type !== 'wild').map(c => c.color);
+                return colors.every(c => c === colors[0]);
+            }
+            return false;
+        }
+
+        function chooseRunSide(existingCards, newCard) {
+            const canStart = runStart([newCard, ...existingCards]) !== null;
+            const canEnd = runStart([...existingCards, newCard]) !== null;
+            if (canStart && canEnd) {
+                return confirm('Add this card BEFORE the run? Click Cancel to add it AFTER.') ? 'start' : 'end';
+            }
+            return canStart ? 'start' : canEnd ? 'end' : null;
+        }
+
+        function dropToSlot(ev, slotIndex) {
+            ev.preventDefault();
+            const dataStr = ev.dataTransfer.getData("text/plain");
+            if (dataStr.startsWith("hand_")) {
+                const cardIndex = parseInt(dataStr.replace("hand_", ""));
+                if (!isNaN(cardIndex)) {
+                    const cardToAdd = currentHand[cardIndex];
+                    const slot = phaseSlotsData[slotIndex];
+
+                    if (isPhaseCompleted) {
+                        if (!hasDrawnCard) return alert("You must draw a card before hitting/dumping cards!");
+                        const existingBoxCards = mySubmittedBoxes[slotIndex] || [];
+                        const side = slot.label.toLowerCase().includes('run') ? chooseRunSide(existingBoxCards, cardToAdd) : 'end';
+                        if (!side || !checkDropValidity(slot, existingBoxCards, cardToAdd, side, true)) {
+                            return alert(`This card does not legally fit into Box ${slotIndex + 1} (${slot.label})!`);
+                        }
+                        socket.emit('hit_phase_box', { room: currentRoom, target_player: myUsername, slot_index: slotIndex, card_index: cardIndex, side: side });
+                    } else {
+                        const currentBoxCards = (slotSelections[slotIndex] || []).map(i => currentHand[i]);
+                        if (!checkDropValidity(slot, currentBoxCards, cardToAdd)) {
+                            return alert(`This card does not fit into Box ${slotIndex + 1} (${slot.label})!`);
+                        }
+
+                        for (let s in slotSelections) {
+                            const idx = slotSelections[s].indexOf(cardIndex);
+                            if (idx > -1) slotSelections[s].splice(idx, 1);
+                        }
+                        if (!slotSelections[slotIndex]) slotSelections[slotIndex] = [];
+                        slotSelections[slotIndex].push(cardIndex);
+                        renderObjectiveBoxes();
+                        renderHand();
+                    }
+                }
+            }
+        }
+
+        function dropToOpponentSlot(ev, opponentName, slotIndex) {
+            ev.preventDefault();
+            if (!hasDrawnCard) return alert("You must draw a card before hitting/dumping cards!");
+
+            const dataStr = ev.dataTransfer.getData("text/plain");
+            if (dataStr.startsWith("hand_")) {
+                const cardIndex = parseInt(dataStr.replace("hand_", ""));
+                if (!isNaN(cardIndex)) {
+                    const cardToAdd = currentHand[cardIndex];
+                    const oppInfo = opponentDataCache[opponentName];
+                    if (!oppInfo || !oppInfo.completed) {
+                        return alert(`${opponentName} has not completed their phase yet!`);
+                    }
+                    const slot = oppInfo.slots[slotIndex];
+                    const existingBoxCards = oppInfo.boxes[slotIndex] || [];
+
+                    const side = slot.label.toLowerCase().includes('run')
+                        ? chooseRunSide(existingBoxCards, cardToAdd) : 'end';
+                    if (!side || !checkDropValidity(slot, existingBoxCards, cardToAdd, side, true)) {
+                        return alert(`This card does not legally fit into ${opponentName}'s Box ${slotIndex + 1} (${slot.label})!`);
+                    }
+
+                    socket.emit('hit_phase_box', { room: currentRoom, target_player: opponentName, slot_index: slotIndex, card_index: cardIndex, side: side });
+                }
+            }
+        }
+
+        function dropToHand(ev, targetIndex) {
+            ev.preventDefault();
+            const dataStr = ev.dataTransfer.getData("text/plain");
+            if (dataStr.startsWith("hand_")) {
+                const sourceIndex = parseInt(dataStr.replace("hand_", ""));
+                if (!isNaN(sourceIndex) && sourceIndex !== targetIndex) {
+                    const movedCard = currentHand.splice(sourceIndex, 1)[0];
+                    currentHand.splice(targetIndex, 0, movedCard);
+                    
+                    socket.emit('reorder_hand', { room: currentRoom, new_hand: currentHand });
+
+                    for (let s in slotSelections) {
+                        slotSelections[s] = slotSelections[s].map(oldIdx => {
+                            if (oldIdx === sourceIndex) return targetIndex;
+                            if (sourceIndex < targetIndex) {
+                                if (oldIdx > sourceIndex && oldIdx <= targetIndex) return oldIdx - 1;
+                            } else {
+                                if (oldIdx >= targetIndex && oldIdx < sourceIndex) return oldIdx + 1;
+                            }
+                            return oldIdx;
+                        });
+                    }
+
+                    renderObjectiveBoxes();
+                    renderHand();
+                }
+            }
+        }
+
+        function removeCardFromBox(slotIndex, cardIndex) {
+            if (isPhaseCompleted) return;
+            if (slotSelections[slotIndex]) {
+                const idx = slotSelections[slotIndex].indexOf(cardIndex);
+                if (idx > -1) {
+                    slotSelections[slotIndex].splice(idx, 1);
+                    renderObjectiveBoxes();
+                    renderHand();
+                }
+            }
+        }
+
+        function submitPhaseCards() {
+            if (!isMyTurn) return alert("It's not your turn!");
+            if (isPhaseCompleted) return alert("Phase already completed!");
+            
+            const groups = [];
+            for (let i = 0; i < phaseSlotsData.length; i++) {
+                groups.push(slotSelections[i] || []);
+            }
+            
+            socket.emit('submit_phase', { room: currentRoom, groups: groups });
+        }
+
+        socket.on('phase_rejected', (data) => {
+            alert(data.message);
+        });
+
+        socket.on('game_won', (data) => {
+            alert(`🏆 ${data.winner} won the match!\\nFinal scores (lower is better):\\n${Object.entries(data.scores || {}).map(([name, score]) => `${name}: ${score}`).join('\\n')}`);
+            location.reload();
+        });
+
+        socket.on('update_lobby', (data) => {
+            document.getElementById('players-list').innerHTML = data.players.map(p => `
+                <li class="bg-white/5 border border-white/10 py-2.5 px-4 rounded-xl flex items-center justify-between">
+                    <span>${p}</span>
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                </li>
+            `).join('');
+        });
+
+        socket.on('game_update', (data) => {
+            document.getElementById('lobby-screen').classList.add('hidden');
+            document.getElementById('game-screen').classList.remove('hidden');
+            
+            if (lastDisplayedRound !== null && data.round_number !== lastDisplayedRound) {
+                slotSelections = {};
+                const points = data.last_round_points || {};
+                const lines = Object.entries(points).map(([name, value]) =>
+                    `${name}: +${value} points (total ${data.scores[name] || 0})`
+                );
+                alert(`Round ${lastDisplayedRound} ended! ${data.last_round_winner} emptied their hand.\n\n${lines.join('\n')}\n\nEveryone receives 10 new cards. Only players who completed their objective advance.`);
+            }
+            lastDisplayedRound = data.round_number;
+            isMyTurn = data.is_my_turn;
+            hasDrawnCard = data.has_drawn;
+            const nextSignature = JSON.stringify(data.hand);
+            if (nextSignature !== lastHandSignature) selectedCardIndex = null;
+            lastHandSignature = nextSignature;
+            currentHand = data.hand;
+            phaseSlotsData = data.phase_slots;
+            isPhaseCompleted = data.phase_completed;
+            mySubmittedBoxes = data.my_boxes || [];
+            opponentDataCache = data.opponents || {};
+            
+            if (isPhaseCompleted) {
+                slotSelections = {};
+                document.getElementById('phase-status-tag').innerText = "Completed (Hit Enabled)";
+                document.getElementById('phase-status-tag').className = "text-[9px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-bold";
+                document.getElementById('submit-phase-btn').style.display = 'none';
+            } else {
+                document.getElementById('phase-status-tag').innerText = "Active";
+                document.getElementById('phase-status-tag').className = "text-[9px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-bold";
+                document.getElementById('submit-phase-btn').style.display = 'block';
+            }
+
+            document.getElementById('deck-count').innerText = data.deck_count;
+            document.getElementById('phase-badge').innerText = `PHASE ${data.phase_step}/${data.max_phases} • #${data.current_phase}`; 
+            document.getElementById('scoreboard').innerText = `Score: ${data.my_score} • Round ${data.round_number}`;
+            document.getElementById('phase-goal-title').innerText = `Phase ${data.current_phase}: ${data.phase_desc}`;
+
+            const banner = document.getElementById('turn-banner');
+            if (isMyTurn) {
+                banner.innerText = isPhaseCompleted ? "YOUR TURN: Drag remaining hand cards into boxes to hit/empty hand!" : (hasDrawnCard ? "YOUR TURN: Drag cards to objective boxes or discard" : "YOUR TURN: Draw from Deck or Discard Pile");
+                banner.className = "text-sm font-black text-emerald-300 tracking-wide bg-emerald-500/20 border border-emerald-500/40 px-4 py-1 rounded-xl animate-pulse";
+            } else {
+                banner.innerText = `Waiting for ${data.current_turn}...`;
+                banner.className = "text-sm font-black text-amber-300 tracking-wide bg-amber-500/10 border border-amber-500/30 px-4 py-1 rounded-xl";
+            }
+
+            const discardContent = document.getElementById('discard-content');
+            if (data.top_discard) {
+                const card = data.top_discard;
+                let filename = card.type === 'wild' ? 'wild.png' : (card.type === 'skip' ? 'skip.png' : `${card.color.toLowerCase()}_${card.value < 10 ? '0' + card.value : card.value}.png`);
+                discardContent.innerHTML = `<img src="/static/images/cards/${filename}" class="w-16 h-24 object-contain rounded-lg shadow">`;
+            } else {
+                discardContent.innerHTML = `<span class="text-[9px] tracking-widest font-black text-gray-400 uppercase">DISCARD</span><span class="text-[10px] text-gray-500 mt-1 italic">Empty</span>`;
+            }
+            
+            const oppContainer = document.getElementById('opponents-container');
+            const oppTableContainer = document.getElementById('opponents-table-boxes');
+            oppContainer.innerHTML = '';
+            oppTableContainer.innerHTML = '';
+            oppTableContainer.style.setProperty('--opponent-count', Math.max(1, Object.keys(opponentDataCache).length));
+
+            for(const [name, info] of Object.entries(opponentDataCache)) {
+                let boxesPreview = '';
+                if (info.completed && info.boxes) {
+                    boxesPreview = `<div class="flex gap-1 mt-1 bg-black/40 p-1 rounded">` + info.boxes.map(group => 
+                        group.map(card => `<img src="/static/images/cards/${getCardFilename(card)}" class="w-4 h-6 object-contain">`).join('')
+                    ).join('<span class="text-white">|</span>') + `</div>`;
+
+                }
+
+                // Keep large objective slots visible from the beginning of the match.
+                // Empty slots become populated once the opponent submits their phase.
+                const opponentSlots = info.slots || [];
+                const opponentGroups = info.boxes || [];
+                const opponentBoxesHtml = opponentSlots.map((slotMeta, sIdx) => {
+                    const group = opponentGroups[sIdx] || [];
+                    const cardsHtml = group.map(card =>
+                        `<img src="/static/images/cards/${getCardFilename(card)}" class="opponent-card-img">`
+                    ).join('');
+                    const opponentArg = JSON.stringify(name).replace(/"/g, '&quot;');
+                    return `
+                        <div onclick="tapOpponentBox(${opponentArg}, ${sIdx})" ondragover="allowDrop(event)" ondrop="dropToOpponentSlot(event, ${opponentArg}, ${sIdx})"
+                             class="opponent-objective-box bg-gradient-to-br from-blue-950/60 to-blue-900/80 border-2 border-dashed border-blue-400/60 rounded-xl p-2 flex flex-col justify-between card-shadow hover:border-blue-300 transition-all relative">
+                            <div class="flex justify-between items-center text-[10px] font-black text-blue-300 uppercase">
+                                <span>${name}'s Box ${sIdx + 1}</span>
+                                <span>${group.length}/${slotMeta.size}+</span>
+                            </div>
+                            <div class="opponent-slot-title text-center font-bold text-white">${slotMeta.label}</div>
+                            <div class="opponent-cards">
+                                ${cardsHtml || '<span class="text-[10px] text-blue-200/70 italic">Waiting for phase...</span>'}
+                            </div>
+                        </div>`;
+                }).join('');
+                oppTableContainer.innerHTML += `
+                    <div class="opponent-panel bg-blue-950/30 rounded-xl border border-blue-400/20">
+                        <span class="text-[11px] font-black tracking-wider text-blue-300 uppercase">${name}'s Objective ${info.completed ? '• Completed' : '• In progress'}</span>
+                        <div class="opponent-boxes-row" style="--slot-count:${Math.max(1,opponentSlots.length)}">${opponentBoxesHtml}</div>
+                    </div>`;
+
+                oppContainer.innerHTML += `
+                    <div class="bg-black/40 border border-white/10 px-4 py-1.5 rounded-xl flex flex-col">
+                        <div class="flex items-center gap-3">
+                            <div>
+                                <div class="font-extrabold text-xs text-gray-200">${name}</div>
+                                <div class="text-[10px] text-amber-400 font-bold">Phase ${info.phase} (${info.phase_step}/${data.max_phases}) • ${info.score} pts ${info.completed ? '(Done)' : ''}</div>
+                            </div>
+                            <div class="bg-amber-500/20 border border-amber-500/30 px-2 py-0.5 rounded-lg text-[10px] font-black text-amber-300">
+                                ${info.cards_count} cards
+                            </div>
+                        </div>
+                        ${boxesPreview}
+                    </div>
+                `;
+            }
+
+            renderObjectiveBoxes();
+            renderHand();
+        });
+
+        function getCardFilename(card) {
+            if (!card) return '';
+            if (card.type === 'wild') return 'wild.png';
+            if (card.type === 'skip') return 'skip.png';
+            const color = card.color.toLowerCase();
+            const val = parseInt(card.value);
+            const valStr = val < 10 ? '0' + val : val.toString();
+            return `${color}_${valStr}.png`;
+        }
+
+        function renderObjectiveBoxes() {
+            const container = document.getElementById('objective-boxes-container');
+            container.innerHTML = '';
+
+            phaseSlotsData.forEach((slot, index) => {
+                const box = document.createElement('div');
+                box.className = "bg-gradient-to-br from-amber-950/50 to-amber-900/70 border-2 border-dashed border-amber-500/60 w-36 h-36 rounded-2xl p-3 flex flex-col justify-between card-shadow hover:border-amber-400 transition-all relative";
+                
+                box.ondragover = allowDrop;
+                box.ondrop = (ev) => dropToSlot(ev, index);
+
+                let assignedIndices = [];
+                let cardsHtml = '';
+
+                if (isPhaseCompleted) {
+                    const groupCards = mySubmittedBoxes[index] || [];
+                    cardsHtml = groupCards.map(card => {
+                        return `<img src="/static/images/cards/${getCardFilename(card)}" class="w-8 h-12 object-contain rounded shadow -ml-4 first:ml-0 inline-block">`;
+                    }).join('');
+                } else {
+                    assignedIndices = slotSelections[index] || [];
+                    cardsHtml = assignedIndices.map(cardIdx => {
+                        const card = currentHand[cardIdx];
+                        if (!card) return '';
+                        return `<img src="/static/images/cards/${getCardFilename(card)}" onclick="removeCardFromBox(${index}, ${cardIdx})" class="w-8 h-12 object-contain rounded shadow -ml-4 first:ml-0 inline-block cursor-pointer hover:scale-110 hover:brightness-125 transition-transform" title="Click to return to hand">`;
+                    }).join('');
+                }
+
+                box.innerHTML = `
+                    <div class="flex justify-between items-center text-[10px] font-black text-amber-300 uppercase">
+                        <span>Box ${index + 1}</span>
+                        <span>${isPhaseCompleted ? mySubmittedBoxes[index]?.length || slot.size : assignedIndices.length}/${slot.size}+</span>
+                    </div>
+                    <div class="text-center font-bold text-xs text-white">${slot.label}</div>
+                    <div class="flex items-center justify-start overflow-x-auto min-h-[48px] bg-black/30 rounded-xl p-1 px-3">
+                        ${cardsHtml || '<span class="text-[9px] text-gray-400 italic">Drop card here</span>'}
+                    </div>
+                `;
+                box.addEventListener('click', (ev) => {
+                    if (ev.target.closest('img') && !isPhaseCompleted) return;
+                    tapOwnBox(index);
+                });
+                container.appendChild(box);
+            });
+        }
+
+        function renderHand() {
+            const handContainer = document.getElementById('hand-container');
+            handContainer.innerHTML = '';
+            
+            const unassignedIndices = [];
+            currentHand.forEach((card, index) => {
+                let isAssigned = false;
+                for (let s in slotSelections) {
+                    if (slotSelections[s].includes(index)) isAssigned = true;
+                }
+                if (!isAssigned) {
+                    unassignedIndices.push(index);
+                }
+            });
+
+            document.getElementById('hand-count').innerText = currentHand.length;
+            
+            const totalVisible = unassignedIndices.length;
+            const step = Math.min(70, Math.max(22, (handContainer.clientWidth - (window.innerWidth <= 700 ? 65 : 100)) / Math.max(1, totalVisible - 1))); 
+            const startOffset = -((totalVisible - 1) * step) / 2;
+
+            unassignedIndices.forEach((cardIndex, visualIdx) => {
+                const card = currentHand[cardIndex];
+                const img = document.createElement('img');
+                img.className = `p10-card-img card-shadow`;
+                img.draggable = true;
+                img.onclick = () => tapCard(cardIndex);
+                img.setAttribute('aria-label', 'Select card ' + (card.type === 'number' ? card.color + ' ' + card.value : card.type));
+                img.setAttribute('role', 'button');
+                img.tabIndex = 0;
+                img.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); tapCard(cardIndex); } };
+                img.src = `/static/images/cards/${getCardFilename(card)}`;
+
+                let xPos = startOffset + (visualIdx * step);
+                img.style.left = `calc(50% + ${xPos}px)`;
+                img.style.zIndex = visualIdx;
+                if (selectedCardIndex === cardIndex) {
+                    img.classList.add('mobile-selected');
+                    img.style.zIndex = 200;
+                }
+
+                img.ondragstart = (ev) => drag(ev, cardIndex);
+                img.ondragover = allowDrop;
+                img.ondrop = (ev) => dropToHand(ev, cardIndex);
+
+                img.onmouseenter = () => {
+                    img.style.zIndex = 100;
+                    img.classList.add('-translate-y-10');
+                };
+                img.onmouseleave = () => {
+                    img.style.zIndex = selectedCardIndex === cardIndex ? 200 : visualIdx;
+                    img.classList.remove('-translate-y-10');
+                };
+
+                handContainer.appendChild(img);
+            });
+        }
+    </script>
+</body>
+</html>
